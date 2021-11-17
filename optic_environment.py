@@ -1,5 +1,7 @@
 import numpy as np
 import numpy.fft as fft
+from gym import Env
+from gym.spaces import Box, Discrete
 import torch
 import torch.nn as nn
 import random
@@ -68,7 +70,7 @@ class optic_propagation():
 
 
 
-class optic_env():
+class optic_env(Env):
     def __init__(self, SLM_size,
                  pic_size,
                  input_length,
@@ -90,6 +92,8 @@ class optic_env():
         N = pic_size[0]
         self.row_idx = [N/2-1, N/2-1, N/2, N/2]
         self.col_idx = [N/2-1, N/2, N/2-1, N/2]
+        self.action_space = Box(low=-np.pi, high=np.pi, shape=SLM_size)
+        self.observation_space = Box(low=0, high=1, shape=pic_size)
 
 
 

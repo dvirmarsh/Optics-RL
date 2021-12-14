@@ -13,25 +13,23 @@ from stable_baselines3 import TD3
 from stable_baselines3.common.evaluation import evaluate_policy
 
 class optic_propagation():
-    def __init__(self,SLM,
-                 Tishue_phase,
-                 distance_laser_SLM,
+    def __init__(self, distance_laser_SLM,
                  distance_SLM_tishue,
                  distance_tishue_focus_point,
                  wave_length,
                  scale,
                  laser_in_field):
-        self.Tishue_phase = Tishue_phase
         self.laser_SLM = distance_laser_SLM
         self.SLM_tishue = distance_SLM_tishue
         self.tishue_focus_point = distance_tishue_focus_point
         self.wave_length = wave_length
         self.scale = scale
-        self.field = np.complex128(laser_in_field)
+        self.scale0 = scale
+        self.field0 = np.complex128(laser_in_field)
+        self.field = self.field0
         #factor = laser_in_field.shape[0]/SLM.shape[0]
         #self.SLM = np.repeat(np.repeat(SLM, factor, axis=1), factor, axis=0)
-        N = (laser_in_field.shape[0]-SLM.shape[0])//2
-        self.SLM = np.pad(SLM, N, mode='edge')
+
 
     "scale operator" \
     "input:a-scale factor"
@@ -76,6 +74,13 @@ class optic_propagation():
         if self.tishue_focus_point>0:
             self.R_diverges(self.tishue_focus_point)
         return np.abs(self.field)**2
+    "reset with new SLM and tissue"
+    def reset(self, SLM, Tissue):
+        N = (self.field.shape[0] - SLM.shape[0]) // 2
+        self.SLM = np.pad(SLM, N, mode='edge')
+        self.field = self.field0
+        self.scale = self.scale0
+        self.Tishue_phase = Tissue
 
 
 
@@ -100,28 +105,27 @@ class optic_env(Env):
         X, Y = np.meshgrid(self.scale, self.scale)
         self.laser_in_field = np.float32(X**2 + Y**2 <= laser_beam_radius**2)
         N = pic_size[0]
-        self.row_idx = [int(N/2-1), int(N/2-1), int(N/2), int(N/2)]
-        self.col_idx = [int(N/2-1), int(N/2), int(N/2-1), int(N/2)]
+        self.row_idx = [N//2-1, N//2-1, N//2, N//2]
+        self.col_idx = [N//2-1, N//2, N//2-1, N//2]
         self.action_space = Box(low=-np.pi, high=np.pi, shape=(np.prod(SLM_size),))
         self.observation_space = Box(low=0, high=255, shape=(*pic_size, 1), dtype=np.uint8)
         self.resize = resize
+        self.prop = optic_propagation(self.laser_SLM,
+                                      self.SLM_tishue,
+                                      self.tishue_focus_point,
+                                      self.wave_length,
+                                      self.scale,
+                                      self.laser_in_field)
 
 
 
 
     def reset(self):
         self.SLM = np.zeros((self.SLM_size[0]*self.resize, self.SLM_size[0]*self.resize))
-        self.tishue_phase = (np.random.rand(*self.pic_size) -1/2)*2*np.pi
-        prop = optic_propagation(self.SLM,
-                                 self.tishue_phase,
-                                 self.laser_SLM,
-                                 self.SLM_tishue,
-                                 self.tishue_focus_point,
-                                 self.wave_length,
-                                 self.scale,
-                                 self.laser_in_field)
+        #self.tishue_phase = (np.random.rand(*self.pic_size) -1/2)*2*np.pi
 
-        obs = prop.diverge_and_scatter()
+        self.prop.reset(self.SLM, self.tishue_phase)
+        obs = self.prop.diverge_and_scatter()
         obs = np.uint8((obs - np.min(obs)) / (np.max(obs) - np.min(obs)) * 255)
         obs = np.expand_dims(obs, axis=-1)
         self.counter = 0
@@ -132,15 +136,8 @@ class optic_env(Env):
         delta_phase = np.reshape(delta_phase, self.SLM_size)
         delta_phase = cv2.resize(delta_phase, (self.SLM_size[0]*self.resize, self.SLM_size[1]*self.resize), interpolation=cv2.INTER_CUBIC)
         self.SLM += delta_phase
-        prop = optic_propagation(self.SLM,
-                                 self.tishue_phase,
-                                 self.laser_SLM,
-                                 self.SLM_tishue,
-                                 self.tishue_focus_point,
-                                 self.wave_length,
-                                 self.scale,
-                                 self.laser_in_field)
-        obs = prop.diverge_and_scatter()
+        self.prop.reset(self.SLM, self.tishue_phase)
+        obs = self.prop.diverge_and_scatter()
         obs = np.uint8((obs-np.min(obs))/(np.max(obs)-np.min(obs))*255)
         reward = np.min(obs[self.row_idx, self.col_idx])/np.mean(obs)
         obs = np.expand_dims(obs, axis=-1)
@@ -183,22 +180,10 @@ class CircEnv(optic_env):
         self.tishue_phase = Tishue[self.N//2:-self.N//2, self.N//2:-self.N//2] + np.random.randn(*self.pic_size)*0.1
 
     def reset(self):
-        self.SLM = np.zeros((self.SLM_size[0]*self.resize, self.SLM_size[0]*self.resize))
+        #self.SLM = np.zeros((self.SLM_size[0]*self.resize, self.SLM_size[0]*self.resize))
         self.Big_Tishue = (np.random.rand(self.N*2, self.N*2) -1/2)*2*np.pi
-        self.tishue_phase = self.Big_Tishue[self.N//2:-self.N//2,self.N//2:-self.N//2]
-        prop = optic_propagation(self.SLM,
-                                 self.tishue_phase,
-                                 self.laser_SLM,
-                                 self.SLM_tishue,
-                                 self.tishue_focus_point,
-                                 self.wave_length,
-                                 self.scale,
-                                 self.laser_in_field)
-
-        obs = prop.diverge_and_scatter()
-        obs = np.uint8((obs - np.min(obs)) / (np.max(obs) - np.min(obs)) * 255)
-        obs = np.expand_dims(obs, axis=-1)
-        self.counter = 0
+        self.tishue_phase = self.Big_Tishue[self.N//2:-self.N//2, self.N//2:-self.N//2]
+        obs = super().reset()
         return obs
 
 
@@ -246,7 +231,7 @@ eval_env = CircEnv((4,4),
 mean_reward, std_reward = evaluate_policy(model, eval_env, n_eval_episodes=10, deterministic=True)
 print(f"mean_reward={mean_reward:.2f} +/- {std_reward}")
 
-model.learn(total_timesteps=int(1e6))
+model.learn(total_timesteps=int(1e3))
 
 mean_reward, std_reward = evaluate_policy(model, eval_env, n_eval_episodes=10, deterministic=True)
 print(f"mean_reward={mean_reward:.2f} +/- {std_reward}")

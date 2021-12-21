@@ -15,7 +15,6 @@ from stable_baselines3.common.evaluation import evaluate_policy
 import wandb
 from wandb.integration.sb3 import WandbCallback
 from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.env_checker import check_env
 
 
 class optic_propagation():
@@ -254,7 +253,6 @@ env = CircEnv(SLM_size=config["SLM_size"],
               d_theta=config["d_theta"])
 env = Monitor(env)
 env = BufferWrapper(env)
-check_env(env)
 model = TD3("CnnPolicy", env, buffer_size=int(2e4), gamma=config["gamma"])
 
 """done = False

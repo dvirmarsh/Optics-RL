@@ -282,7 +282,7 @@ mean_reward, std_reward = evaluate_policy(model, eval_env, n_eval_episodes=10, d
 print(f"mean_reward={mean_reward:.2f} +/- {std_reward}")
 
 model.learn(total_timesteps=int(1e6),
-            callback=WandbCallback(gradient_save_freq=2,
+            callback=WandbCallback(gradient_save_freq=10,
                                    model_save_path=f"models/{run.id}",
                                    )
             )

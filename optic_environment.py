@@ -2,6 +2,7 @@ import numpy as np
 import numpy.fft as fft
 from gym import Env
 from gym.spaces import Box, Discrete
+import gym
 import torch
 import torch.nn as nn
 import random
@@ -11,6 +12,11 @@ import matplotlib.pyplot as plt
 from scipy import ndimage
 from stable_baselines3 import TD3
 from stable_baselines3.common.evaluation import evaluate_policy
+import wandb
+from wandb.integration.sb3 import WandbCallback
+from stable_baselines3.common.monitor import Monitor
+from stable_baselines3.common.env_checker import check_env
+
 
 class optic_propagation():
     def __init__(self, distance_laser_SLM,
@@ -65,16 +71,16 @@ class optic_propagation():
     "propagation with phase from the SLM and tishue phase" \
     "outputs: the intensity taken by the camera"
     def diverge_and_scatter(self):
-        if self.laser_SLM>0:
+        if self.laser_SLM > 0:
             self.R_diverges(self.laser_SLM)
         self.field *= np.exp(1j*self.SLM)
-        if self.SLM_tishue>0:
+        if self.SLM_tishue > 0:
             self.R_diverges(self.SLM_tishue)
         self.field *= np.exp(1j*self.Tishue_phase)
-        if self.tishue_focus_point>0:
+        if self.tishue_focus_point > 0:
             self.R_diverges(self.tishue_focus_point)
         return np.abs(self.field)**2
-    "reset with new SLM and tissue"
+    "reset with new SLM and tissue phase"
     def reset(self, SLM, Tissue):
         N = (self.field.shape[0] - SLM.shape[0]) // 2
         self.SLM = np.pad(SLM, N, mode='edge')
@@ -107,7 +113,7 @@ class optic_env(Env):
         N = pic_size[0]
         self.row_idx = [N//2-1, N//2-1, N//2, N//2]
         self.col_idx = [N//2-1, N//2, N//2-1, N//2]
-        self.action_space = Box(low=-np.pi, high=np.pi, shape=(np.prod(SLM_size),))
+        self.action_space = Box(low=-1, high=1, shape=(np.prod(SLM_size),))
         self.observation_space = Box(low=0, high=255, shape=(*pic_size, 1), dtype=np.uint8)
         self.resize = resize
         self.prop = optic_propagation(self.laser_SLM,
@@ -132,16 +138,19 @@ class optic_env(Env):
         return obs
 
     def step(self, delta_phase):
-        self.update_tishue_phase()
-        delta_phase = np.reshape(delta_phase, self.SLM_size)
-        delta_phase = cv2.resize(delta_phase, (self.SLM_size[0]*self.resize, self.SLM_size[1]*self.resize), interpolation=cv2.INTER_CUBIC)
-        self.SLM += delta_phase
+        self.counter += 1
+        self.update_tishue_phase()  # update the tissue phase by the given environment
+        delta_phase = np.reshape(delta_phase*np.pi, self.SLM_size)  # The actions returned are with the shape of (N^2,)
+        # and in the range [-1,1]
+        if self.resize > 1:
+            delta_phase = cv2.resize(delta_phase, (self.SLM_size[0]*self.resize, self.SLM_size[1]*self.resize),
+                                     interpolation=cv2.INTER_CUBIC)
+        self.SLM += delta_phase  # update the SLM
         self.prop.reset(self.SLM, self.tishue_phase)
         obs = self.prop.diverge_and_scatter()
-        obs = np.uint8((obs-np.min(obs))/(np.max(obs)-np.min(obs))*255)
-        reward = np.min(obs[self.row_idx, self.col_idx])/np.mean(obs)
+        obs = np.uint8((obs-np.min(obs))/(np.max(obs)-np.min(obs))*255)  # normalize the observation
+        reward = np.min(obs[self.row_idx, self.col_idx])/np.mean(obs)  # how much is the beam focused
         obs = np.expand_dims(obs, axis=-1)
-        self.counter += 1
         done = False
         if self.counter == 100:
             done = True
@@ -176,38 +185,79 @@ class CircEnv(optic_env):
         self.N = self.pic_size[0]
 
     def update_tishue_phase(self):
-        Tishue = ndimage.rotate(self.Big_Tishue, self.d_theta*self.counter, reshape=False, order=5)
-        self.tishue_phase = Tishue[self.N//2:-self.N//2, self.N//2:-self.N//2] + np.random.randn(*self.pic_size)*0.1
+        Tishue = ndimage.rotate(self.Big_Tishue, self.d_theta*self.counter, reshape=False, order=0)
+        self.tishue_phase = Tishue[self.N//2:-self.N//2, self.N//2:-self.N//2]
 
     def reset(self):
         #self.SLM = np.zeros((self.SLM_size[0]*self.resize, self.SLM_size[0]*self.resize))
-        self.Big_Tishue = (np.random.rand(self.N*2, self.N*2) -1/2)*2*np.pi
+        self.Big_Tishue = (np.random.rand(self.N*2, self.N*2) - 1/2)*2*np.pi
         self.tishue_phase = self.Big_Tishue[self.N//2:-self.N//2, self.N//2:-self.N//2]
         obs = super().reset()
         return obs
 
 
+class BufferWrapper(gym.ObservationWrapper):
+    """
+    Only every k-th frame is collected by the buffer
+    """
+
+    def __init__(self, env, n_steps=3):
+        super(BufferWrapper, self).__init__(env)
+        old_space = env.observation_space
+        self.dtype = old_space.dtype
+        self.observation_space = gym.spaces.Box(old_space.low.repeat(n_steps, axis=-1),
+                                                old_space.high.repeat(n_steps, axis=-1), dtype=old_space.dtype)
+
+    def reset(self):
+        self.buffer = np.zeros_like(self.observation_space.low, dtype=self.dtype)
+        return self.observation(self.env.reset())
+
+    def observation(self, observation):
+        self.buffer[:,:,:-1] = self.buffer[:,:,1:]
+        self.buffer[:,:,-1] = np.squeeze(observation)
+        return self.buffer
 
 
 
 
 
 
+config = {
+    "policy_type": "CnnPolicy",
+    "SLM_size": (10, 10),
+    "pic_size": (64, 64),
+    "input_length": 2e-2,
+    "wave_length": 532e-9,
+    "distannce_laser_SLM": 0,
+    "distance_SLM_tishue": 4e-2,
+    "distance_tishue_focus_point": 4e-2,
+    "laser_beam_radius": 1e-3,
+    "d_theta": 1,
+    "gamma": 0.99,
+    "total_timesteps": 25000,
+    "env_name": "CartPole-v1",
+}
+run = wandb.init(project="opticRL",
+                 config=config,
+                 sync_tensorboard=True,  # auto-upload sb3's tensorboard metrics
+                 )
 
 
+env = CircEnv(SLM_size=config["SLM_size"],
+              pic_size=config["pic_size"],
+              input_length=config["input_length"],
+              wave_length=config["wave_length"],
+              distance_laser_SLM=config["distannce_laser_SLM"],
+              distance_SLM_tishue=config["distance_SLM_tishue"],
+              distance_tishue_focus_point=config["distance_tishue_focus_point"],
+              laser_beam_radius=config["laser_beam_radius"],
+              d_theta=config["d_theta"])
+env = Monitor(env)
+env = BufferWrapper(env)
+check_env(env)
+model = TD3("CnnPolicy", env, buffer_size=int(2e4), gamma=config["gamma"])
 
-env = CircEnv((4,4),
-              (128,128),
-              2e-2,
-              532e-9,
-              0,
-              4e-2,
-              4e-2,
-              1e-3,
-              1)
-model = TD3("CnnPolicy", env, buffer_size = int(1e3),gamma=0.99)
-
-done = False
+"""done = False
 obs = env.reset()
 obs0 = obs
 rewards = []
@@ -218,25 +268,31 @@ while done!=True:
     rewards.append(reward)
 
 imgplot = plt.imshow(obs)
-plt.show()
-eval_env = CircEnv((4,4),
-                   (128,128),
-                   2e-2,
-                   532e-9,
-                   0,
-                   4e-2,
-                   4e-2,
-                   1e-3,
-                   1)
+plt.show()"""
+eval_env = CircEnv(SLM_size=config["SLM_size"],
+                   pic_size=config["pic_size"],
+                   input_length=config["input_length"],
+                   wave_length=config["wave_length"],
+                   distance_laser_SLM=config["distannce_laser_SLM"],
+                   distance_SLM_tishue=config["distance_SLM_tishue"],
+                   distance_tishue_focus_point=config["distance_tishue_focus_point"],
+                   laser_beam_radius=config["laser_beam_radius"],
+                   d_theta=config["d_theta"])
+eval_env = Monitor(eval_env)
+eval_env = BufferWrapper(eval_env)
 mean_reward, std_reward = evaluate_policy(model, eval_env, n_eval_episodes=10, deterministic=True)
 print(f"mean_reward={mean_reward:.2f} +/- {std_reward}")
 
-model.learn(total_timesteps=int(1e3))
+model.learn(total_timesteps=int(1e6),
+            callback=WandbCallback(gradient_save_freq=2,
+                                   model_save_path=f"models/{run.id}",
+                                   )
+            )
 
 mean_reward, std_reward = evaluate_policy(model, eval_env, n_eval_episodes=10, deterministic=True)
 print(f"mean_reward={mean_reward:.2f} +/- {std_reward}")
 
-done = False
+"""done = False
 obs = env.reset()
 obs0 = obs
 rewards = []
@@ -247,7 +303,7 @@ while done!=True:
 
 imgplot = plt.imshow(obs)
 plt.show()
-a = 0
+a = 0"""
 
 
 

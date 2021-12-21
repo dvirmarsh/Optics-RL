@@ -98,7 +98,7 @@ class optic_env(Env):
                  distance_SLM_tishue,
                  distance_tishue_focus_point,
                  laser_beam_radius,
-                 resize=2
+                 resize=1
                  ):
         self.SLM_size = SLM_size
         self.pic_size = pic_size
@@ -169,7 +169,7 @@ class CircEnv(optic_env):
                  distance_tishue_focus_point,
                  laser_beam_radius,
                  d_theta,
-                 resize=2
+                 resize=1
                  ):
         super(CircEnv, self).__init__(SLM_size,
                                       pic_size,
@@ -253,7 +253,7 @@ env = CircEnv(SLM_size=config["SLM_size"],
               d_theta=config["d_theta"])
 env = Monitor(env)
 env = BufferWrapper(env)
-model = TD3("CnnPolicy", env, buffer_size=int(2e4), gamma=config["gamma"])
+model = TD3("CnnPolicy", env, buffer_size=int(2e4), gamma=config["gamma"], tensorboard_log=f"runs")
 
 """done = False
 obs = env.reset()

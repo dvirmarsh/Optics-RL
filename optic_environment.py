@@ -151,7 +151,7 @@ class optic_env(Env):
         reward = np.min(obs[self.row_idx, self.col_idx])/np.mean(obs)  # how much is the beam focused
         obs = np.expand_dims(obs, axis=-1)
         done = False
-        if self.counter == 100:
+        if self.counter == 150:
             done = True
         info = {}
         return obs, reward, done, info
@@ -281,7 +281,7 @@ eval_env = BufferWrapper(eval_env)
 mean_reward, std_reward = evaluate_policy(model, eval_env, n_eval_episodes=10, deterministic=True)
 print(f"mean_reward={mean_reward:.2f} +/- {std_reward}")
 
-model.learn(total_timesteps=int(1e6),
+model.learn(total_timesteps=int(2e6),
             callback=WandbCallback(gradient_save_freq=10,
                                    model_save_path=f"models/{run.id}",
                                    )
